@@ -501,14 +501,26 @@
   }
 
   // ---- map setup ----
+  // GB's bounding box is hardcoded rather than computed from gb_outline.geojson
+  // at runtime -- fitBounds()'s zoom calculation depends on the map container
+  // already having its final on-screen size, which is timing-sensitive (can
+  // differ between a local test and a real deploy), and a fetch failure would
+  // silently leave the map with no zoom/pan limits at all. A fixed box removes
+  // both risks. St Kilda/Outer Hebrides sit around -8.6 degrees, so this
+  // deliberately excludes Rockall (~-13.7), a UK-claimed rock far out in the
+  // Atlantic that would otherwise force a much wider, mostly-empty-sea view.
+  var GB_BOUNDS = L.latLngBounds([49.85, -8.75], [60.9, 1.9]);
   var map = L.map('map', {
     preferCanvas: true,
     zoomControl: false,
     attributionControl: false,
     maxZoom: 15,
-    maxBoundsViscosity: 1.0
+    maxBoundsViscosity: 1.0,
+    maxBounds: GB_BOUNDS.pad(0.15)
   });
   L.control.zoom({ position: 'bottomright' }).addTo(map);
+  map.fitBounds(GB_BOUNDS, { padding: [4,4] });
+  map.setMinZoom(map.getZoom());
 
   // Real basemap tiles (roads, towns, place names) for geographic orientation.
   // Esri's Light/Dark Gray Canvas basemaps are free to use directly from
@@ -566,7 +578,11 @@
 
   function clearHover(){
     selectionLayer.clearLayers();
-    if (hovered && hovered.layer) hovered.layer.setStyle(baseStyle(hovered.layer.feature));
+    if (hovered && hovered.layer) {
+      hovered.layer.setStyle(baseStyle(hovered.layer.feature));
+      hovered.layer.closeTooltip();
+      hovered.layer.unbindTooltip();
+    }
     hovered = null;
   }
 
@@ -621,41 +637,13 @@
     updateStatsLabel();
   });
 
-  // ---- GB outline: used only to fit/clamp the view, not drawn -- the real
-  // basemap tiles now show the coastline, towns and roads for orientation ----
-  //
-  // The outline's MultiPolygon includes Rockall, a speck of rock ~300km out
-  // in the Atlantic that's still legally part of the UK. Fitting the view to
-  // include it drags the whole map west and leaves a huge stretch of empty
-  // sea in frame, so it (and anything else that remote) is excluded from the
-  // bounds used to fit/lock the view -- St Kilda and the rest of the Outer
-  // Hebrides, the westernmost points anyone actually expects to see, sit
-  // around -8.6 degrees, so -9 is a safe cutoff.
-  var WEST_CUTOFF = -9;
-  fetch('gb_outline.geojson').then(function(r){ return r.json(); }).then(function(gj){
-    var polys = gj.geometry.type === 'MultiPolygon' ? gj.geometry.coordinates : [gj.geometry.coordinates];
-    var minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
-    polys.forEach(function(poly){
-      var westmost = Infinity;
-      poly.forEach(function(ring){ ring.forEach(function(c){ if (c[0] < westmost) westmost = c[0]; }); });
-      if (westmost < WEST_CUTOFF) return; // skip this island entirely
-      poly.forEach(function(ring){
-        ring.forEach(function(c){
-          if (c[0] < minLon) minLon = c[0];
-          if (c[0] > maxLon) maxLon = c[0];
-          if (c[1] < minLat) minLat = c[1];
-          if (c[1] > maxLat) maxLat = c[1];
-        });
-      });
-    });
-    var b = L.latLngBounds([minLat, minLon], [maxLat, maxLon]);
-    map.fitBounds(b, { padding: [4,4] });
-    // Lock zooming out no further than this initial GB-filling view, and stop
-    // panning away from GB entirely.
-    map.setMinZoom(map.getZoom());
-    map.setMaxBounds(b.pad(0.15));
-    updateZoomGating();
-  }).catch(function(err){ console.error('outline load failed', err); });
+  // GB's framing (view lock, min zoom, max pan bounds) is set above, right
+  // when the map is created, using the hardcoded GB_BOUNDS. gb_outline.geojson
+  // is no longer fetched at all -- the real basemap tiles show the coastline
+  // for orientation, and the old outline-fit code depended on the fetch
+  // succeeding and the map container already having its final size, which is
+  // unreliable at page-load time.
+  updateZoomGating();
 
   // ---- label placement helper: midpoint of a feature's longest line part ----
   function longestPart(geom){
