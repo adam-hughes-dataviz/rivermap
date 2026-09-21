@@ -277,7 +277,18 @@
   }
   #compass svg{ display:block; }
 
-  /* ---- hover tooltip (river info) ---- */
+  /* ---- river info panel: fixed in the top-right, filled on hover/click ---- */
+  #infoPanel{
+    position:absolute;
+    top: calc(140px + env(safe-area-inset-top,0px));
+    right:16px;
+    z-index:1000;
+    width:250px;
+    max-width:calc(100vw - 32px);
+    display:none;
+  }
+
+  /* ---- river info panel contents (also reused by #infoPanel above) ---- */
   .river-tip{
     background:var(--surface) !important;
     color:var(--ink) !important;
@@ -407,6 +418,8 @@
     </svg>
   </div>
 
+  <div id="infoPanel" class="river-tip" aria-live="polite"></div>
+
   <div id="legend" class="panel">
     <h2>Legend</h2>
     <div class="legend-row"><span class="swatch" style="background:var(--river)"></span>River / stream</div>
@@ -475,10 +488,15 @@
   function flowDirection(p){
     if (p.slat == null || p.mlat == null) return null;
     var brng = bearing(p.slat, p.slon, p.mlat, p.mlon);
-    return COMPASS_WORDS[Math.round(brng/45) % 8];
+    return { word: COMPASS_WORDS[Math.round(brng/45) % 8], brng: brng };
   }
-  function flowArrowSvg(){
-    return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="8 5 19 5 19 16"/></svg>';
+  // The glyph itself is drawn pointing north-east (45deg on a compass), so it
+  // only needs rotating by (bearing - 45) to point wherever the river actually
+  // flows -- this keeps it in sync with the "Flows towards the ..." text
+  // instead of always showing the same fixed north-east arrow.
+  function flowArrowSvg(brng){
+    var rotate = brng - 45;
+    return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(' + rotate + 'deg)"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="8 5 19 5 19 16"/></svg>';
   }
 
   function escapeHtml(s){
@@ -494,7 +512,7 @@
       '<div class="tip-name">' + escapeHtml(p.nm) + '</div>' +
       '<div class="tip-badge"><span class="dot" style="background:' + color + '"></span>' + typeLabel(p.frm) + '</div>' +
       '<div class="tip-row"><span class="k">Length</span><span class="v mono">' + fmtLen(p.len) + '</span></div>' +
-      (dir ? '<div class="tip-flow" style="color:' + color + '">' + flowArrowSvg() + '<span style="color:var(--ink)">Flows towards the ' + dir + '</span></div>' : '') +
+      (dir ? '<div class="tip-flow" style="color:' + color + '">' + flowArrowSvg(dir.brng) + '<span style="color:var(--ink)">Flows towards the ' + dir.word + '</span></div>' : '') +
       '<div class="tip-row"><span class="k">' + endLabel(p.sc,'source') + '</span><span class="v mono">' + fmtBNG(p.se,p.sn) + '<span class="tip-sub">' + endSub(p.sc,'source') + '</span></span></div>' +
       '<div class="tip-row"><span class="k">' + endLabel(p.mc,'mouth') + '</span><span class="v mono">' + fmtBNG(p.me,p.mn) + '<span class="tip-sub">' + endSub(p.mc,'mouth') + '</span></span></div>'
     );
@@ -551,7 +569,9 @@
   var selectionLayer = L.layerGroup().addTo(map);
 
   var allFeatures = []; // {name, len, layer, major}
-  var hovered = null;
+  var currentHighlight = null; // whichever entry is currently drawn highlighted (hover preview or pinned)
+  var pinnedEntry = null; // set by clicking a river (or picking a search result); stays highlighted till unpinned
+  var infoPanel = document.getElementById('infoPanel');
   var zoomGatedItems = []; // { minZoom, layer, group } -- populated once river data loads
   function updateZoomGating(){
     if (!map.getZoom && map.getZoom() == null) return;
@@ -567,6 +587,16 @@
   }
   map.on('zoomend', updateZoomGating);
 
+  // Clicking empty map (not a river) unpins whatever's currently pinned.
+  // River click handlers stop propagation, so this only fires for clicks
+  // that didn't land on a river's hit layer.
+  map.on('click', function(){
+    if (pinnedEntry) {
+      pinnedEntry = null;
+      restoreAfterHover();
+    }
+  });
+
   function baseStyle(feature){
     var p = feature.properties;
     var major = p.len >= MAJOR_KM;
@@ -576,20 +606,31 @@
     return { color: colorFor(feature.properties.frm), weight: 4.2, opacity: 1, renderer: canvasRenderer };
   }
 
-  function clearHover(){
+  // Clears whatever's currently drawn highlighted (hover preview or pinned)
+  // without touching the info panel -- callers decide what happens to that.
+  function clearHighlightVisuals(){
     selectionLayer.clearLayers();
-    if (hovered && hovered.layer) {
-      hovered.layer.setStyle(baseStyle(hovered.layer.feature));
-      hovered.layer.closeTooltip();
-      hovered.layer.unbindTooltip();
-    }
-    hovered = null;
+    if (currentHighlight && currentHighlight.layer) currentHighlight.layer.setStyle(baseStyle(currentHighlight.layer.feature));
+    currentHighlight = null;
   }
 
-  function showRiver(entry, opts){
+  // After a hover ends: if a river is pinned, restore ITS highlight and panel
+  // content (pinning survives moving the mouse away); otherwise clear
+  // everything and hide the panel.
+  function restoreAfterHover(){
+    clearHighlightVisuals();
+    if (pinnedEntry) {
+      applyHighlight(pinnedEntry);
+    } else {
+      infoPanel.style.display = 'none';
+      infoPanel.innerHTML = '';
+    }
+  }
+
+  function applyHighlight(entry, opts){
     opts = opts || {};
     var isVisible = entry.major || minorVisible;
-    clearHover();
+    clearHighlightVisuals();
 
     var targetLayer;
     if (isVisible) {
@@ -599,7 +640,7 @@
     } else {
       targetLayer = L.geoJSON(entry.layer.feature, { style: hoverStyle, renderer: canvasRenderer }).addTo(selectionLayer);
     }
-    hovered = { entry: entry, layer: targetLayer, adhoc: !isVisible };
+    currentHighlight = { entry: entry, layer: targetLayer, adhoc: !isVisible };
 
     var p = entry.layer.feature.properties;
     var accent = colorFor(p.frm);
@@ -612,13 +653,35 @@
         .addTo(selectionLayer);
     }
 
-    targetLayer.bindTooltip(tipHtml(p), { className:'river-tip', sticky:true, direction:'top', offset:[0,-8], opacity:1 });
-    targetLayer.openTooltip();
+    // The river info always shows in the same fixed panel (top-right of the
+    // page) rather than a tooltip that follows the cursor/feature.
+    infoPanel.innerHTML = tipHtml(p);
+    infoPanel.style.display = 'block';
 
     if (opts.fly) {
       var b = targetLayer.getBounds();
       map.flyToBounds(b, { padding:[80,80], maxZoom: 13, duration: 0.6 });
     }
+  }
+
+  // Click (or picking a search result) pins a river: it stays highlighted,
+  // with its info in the panel, even after the mouse moves away. Clicking the
+  // already-pinned river again unpins it.
+  function togglePin(entry, opts){
+    if (pinnedEntry === entry) {
+      pinnedEntry = null;
+      applyHighlight(entry, opts); // mouse is still over it (this came from a click) -- keep it showing as a hover preview
+    } else {
+      pinnedEntry = entry;
+      applyHighlight(entry, opts);
+    }
+  }
+
+  // Kept as the entry point search results use: always pins the result, since
+  // there's no ongoing hover to fall back on afterwards.
+  function showRiver(entry, opts){
+    pinnedEntry = entry;
+    applyHighlight(entry, opts);
   }
 
   // ---- major / all toggle ----
@@ -690,9 +753,12 @@
       lyr.feature = feature;
       var visibleLyr = visibleLayerByFeature.get(feature);
       var entry = { name: feature.properties.nm, len: feature.properties.len, layer: visibleLyr, major: feature.properties.len >= MAJOR_KM };
-      lyr.on('mouseover', function(){ showRiver(entry, { fly:false }); });
-      lyr.on('mouseout', function(){ clearHover(); });
-      lyr.on('click', function(){ showRiver(entry, { fly:false }); }); // touch-friendly fallback
+      // Hovering always previews that river, even while another is pinned --
+      // moving the mouse away restores whatever was pinned (or clears if
+      // nothing was).
+      lyr.on('mouseover', function(){ applyHighlight(entry); });
+      lyr.on('mouseout', function(){ restoreAfterHover(); });
+      lyr.on('click', function(e){ L.DomEvent.stopPropagation(e); togglePin(entry); });
       allFeatures.push(entry);
     }
     function invisibleStyle(feature){
