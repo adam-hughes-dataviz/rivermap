@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rivers of Britain</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="leaflet.css">
+<style>
+  :root{
+    --sea:#CBD8DD;
+    --land:#F1EEE6;
+    --coast:#8A7355;
+    --surface:#FBF7ED;
+    --surface-2:#F1E9D5;
+    --ink:#2B2A28;
+    --muted:#6E6558;
+    --border:#DCD0AE;
+    --river:#1B5FA0;
+    --tidal:#059669;
+    --canal:#A6672A;
+    --accent:#1B5FA0;
+    --city-dot:#4A4436;
+    --shadow: 0 6px 20px rgba(60,48,20,0.16), 0 1px 3px rgba(60,48,20,0.10);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --sea:#131516;
+      --land:#1A1A1A;
+      --coast:#6B5A3E;
+      --surface:#1B160E;
+      --surface-2:#241E13;
+      --ink:#ECE6D8;
+      --muted:#9C9484;
+      --border:#3A3226;
+      --river:#4A8BC2;
+      --tidal:#1C9B6E;
+      --canal:#C08838;
+      --accent:#4A8BC2;
+      --city-dot:#CFC6AE;
+      --shadow: 0 6px 24px rgba(0,0,0,0.55), 0 1px 3px rgba(0,0,0,0.4);
+    }
+  }
+  :root[data-theme="dark"]{
+    --sea:#131516;
+    --land:#1A1A1A;
+    --coast:#6B5A3E;
+    --surface:#1B160E;
+    --surface-2:#241E13;
+    --ink:#ECE6D8;
+    --muted:#9C9484;
+    --border:#3A3226;
+    --river:#4A8BC2;
+    --tidal:#1C9B6E;
+    --canal:#C08838;
+    --accent:#4A8BC2;
+    --city-dot:#CFC6AE;
+    --shadow: 0 6px 24px rgba(0,0,0,0.55), 0 1px 3px rgba(0,0,0,0.4);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:var(--sea);
+    color:var(--ink);
+    font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    overflow:hidden;
+  }
+  .mono{ font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
+  .serif{ font-family:"Libre Baskerville",Georgia,"Times New Roman",serif; }
+
+  #app{ position:relative; height:100%; width:100%; }
+  #map{ position:absolute; inset:0; background:var(--sea); }
+  .leaflet-container{ background:var(--sea); }
+
+  /* ---- top bar ---- */
+  #topbar{
+    position:absolute;
+    top: calc(14px + env(safe-area-inset-top,0px));
+    left:16px;
+    right:16px;
+    z-index:1000;
+    display:flex;
+    gap:12px;
+    align-items:flex-start;
+    pointer-events:none;
+  }
+  .panel{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    box-shadow:var(--shadow);
+    pointer-events:auto;
+  }
+  #titleCard{
+    padding:11px 18px 12px;
+    min-width:200px;
+    flex:0 0 auto;
+  }
+  #titleCard h1{
+    margin:0;
+    font-size:19px;
+    font-weight:700;
+    font-style:italic;
+    letter-spacing:0.01em;
+    line-height:1.15;
+  }
+  #stats{
+    margin-top:3px;
+    font-size:11.5px;
+    color:var(--muted);
+  }
+  #stats .mono{ color:var(--ink); font-weight:500; }
+
+  #searchWrap{
+    flex:1 1 320px;
+    max-width:380px;
+    position:relative;
+  }
+  #searchBox{
+    padding:8px 10px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  #searchBox svg{ flex:none; color:var(--muted); }
+  #searchInput{
+    border:none;
+    outline:none;
+    background:transparent;
+    font-family:inherit;
+    font-size:14px;
+    color:var(--ink);
+    width:100%;
+  }
+  #searchInput::placeholder{ color:var(--muted); }
+  #clearBtn{
+    border:none;
+    background:none;
+    color:var(--muted);
+    cursor:pointer;
+    padding:2px;
+    display:none;
+    font-size:16px;
+    line-height:1;
+  }
+  #suggestions{
+    position:absolute;
+    top:calc(100% + 6px);
+    left:0;
+    right:0;
+    max-height:60vh;
+    overflow-y:auto;
+    display:none;
+  }
+  #suggestions.open{ display:block; }
+  .suggestion{
+    padding:9px 12px;
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    align-items:baseline;
+    cursor:pointer;
+    border-bottom:1px solid var(--border);
+    font-size:13.5px;
+  }
+  .suggestion:last-child{ border-bottom:none; }
+  .suggestion:hover, .suggestion.active{ background:var(--surface-2); }
+  .suggestion .sname{ font-weight:500; }
+  .suggestion .slen{ color:var(--muted); font-size:12px; flex:none; }
+  .suggestion .stype{
+    display:inline-block;
+    width:7px; height:7px;
+    border-radius:50%;
+    margin-right:6px;
+  }
+  #noResults{ padding:10px 12px; font-size:13px; color:var(--muted); }
+
+  /* ---- legend ---- */
+  #legend{
+    position:absolute;
+    left:16px;
+    bottom: calc(16px + env(safe-area-inset-bottom,0px));
+    z-index:1000;
+    padding:12px 14px;
+    font-size:12.5px;
+    max-width:225px;
+  }
+  #legend h2{
+    margin:0 0 8px;
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--muted);
+    font-weight:600;
+  }
+  .legend-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-bottom:6px;
+  }
+  .legend-row:last-of-type{ margin-bottom:10px; }
+  .swatch{ width:16px; height:3px; border-radius:2px; flex:none; }
+  .swatch-dot{ width:7px; height:7px; border-radius:50%; flex:none; background:var(--city-dot); }
+  .legend-hint{
+    color:var(--muted);
+    font-size:11.5px;
+    line-height:1.45;
+    border-top:1px solid var(--border);
+    padding-top:8px;
+  }
+  #toggleRow{
+    display:flex;
+    align-items:center;
+    gap:9px;
+    padding:9px 0 10px;
+    border-top:1px solid var(--border);
+    margin-top:2px;
+    cursor:pointer;
+    font-size:12.5px;
+    font-weight:500;
+    user-select:none;
+  }
+  .switch{
+    position:relative;
+    display:inline-block;
+    width:32px; height:18px;
+    flex:none;
+  }
+  .switch input{
+    opacity:0; width:0; height:0;
+    position:absolute;
+  }
+  .switch .slider{
+    position:absolute; inset:0;
+    background:var(--border);
+    border-radius:999px;
+    transition:background .15s ease;
+  }
+  .switch .slider::before{
+    content:"";
+    position:absolute;
+    width:14px; height:14px;
+    left:2px; top:2px;
+    background:var(--surface);
+    border-radius:50%;
+    box-shadow:0 1px 2px rgba(0,0,0,0.25);
+    transition:transform .15s ease;
+  }
+  .switch input:checked + .slider{ background:var(--accent); }
+  .switch input:checked + .slider::before{ transform:translateX(14px); }
+  .switch input:focus-visible + .slider{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* ---- attribution ---- */
+  #attribution{
+    position:absolute;
+    right:16px;
+    bottom: calc(16px + env(safe-area-inset-bottom,0px));
+    z-index:1000;
+    padding:7px 11px;
+    font-size:11px;
+    color:var(--muted);
+  }
+
+  /* ---- compass rose ---- */
+  #compass{
+    position:absolute;
+    right:16px;
+    top: calc(84px + env(safe-area-inset-top,0px));
+    z-index:1000;
+    width:46px; height:46px;
+    padding:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  #compass svg{ display:block; }
+
+  /* ---- hover tooltip (river info) ---- */
+  .river-tip{
+    background:var(--surface) !important;
+    color:var(--ink) !important;
+    border:1px solid var(--border) !important;
+    border-radius:9px !important;
+    box-shadow:var(--shadow) !important;
+    padding:10px 13px !important;
+    opacity:1 !important;
+    font-family:"IBM Plex Sans",sans-serif;
+  }
+  .river-tip::before{ display:none !important; }
+  .tip-name{ font-weight:700; font-size:14.5px; margin:0 0 5px; font-style:italic; font-family:"Libre Baskerville",serif; }
+  .tip-badge{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    font-size:10.5px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    padding:2px 8px 2px 6px;
+    border-radius:999px;
+    background:var(--surface-2);
+    margin-bottom:8px;
+  }
+  .tip-badge .dot{ width:6px;height:6px;border-radius:50%; }
+  .tip-row{
+    display:flex;
+    justify-content:space-between;
+    gap:14px;
+    padding:4px 0;
+    border-top:1px solid var(--border);
+    font-size:12px;
+  }
+  .tip-row:first-of-type{ border-top:none; padding-top:0; }
+  .tip-row .k{ color:var(--muted); }
+  .tip-row .v{ text-align:right; }
+  .tip-sub{ display:block; color:var(--muted); font-size:10.2px; margin-top:1px; }
+  .tip-flow{
+    display:flex; align-items:center; gap:6px;
+    font-size:12px; padding:6px 0 2px;
+    border-top:1px solid var(--border);
+    margin-top:2px;
+  }
+
+  /* ---- permanent river name labels (major rivers) ---- */
+  .river-label{
+    background:none !important;
+    border:none !important;
+    box-shadow:none !important;
+    padding:0 !important;
+    font-family:"Libre Baskerville",Georgia,serif;
+    font-style:italic;
+    font-weight:700;
+    font-size:12px;
+    color:var(--ink);
+    text-shadow:
+      0 0 3px var(--land), 0 0 3px var(--land), 0 0 3px var(--land),
+      0 0 5px var(--land), 0 0 5px var(--land);
+    pointer-events:none;
+    white-space:nowrap;
+  }
+  .river-label::before{ display:none !important; }
+
+  /* ---- city markers ---- */
+  .city-label{
+    background:none !important;
+    border:none !important;
+    box-shadow:none !important;
+    padding:0 !important;
+    font-family:"IBM Plex Sans",sans-serif;
+    font-size:10.5px;
+    font-weight:500;
+    letter-spacing:0.02em;
+    color:var(--muted);
+    text-shadow:
+      0 0 3px var(--land), 0 0 3px var(--land), 0 0 3px var(--land),
+      0 0 4px var(--land);
+    pointer-events:none;
+    white-space:nowrap;
+  }
+  .city-label::before{ display:none !important; }
+
+  /* leaflet control tweaks */
+  .leaflet-control-zoom a{
+    background:var(--surface) !important;
+    color:var(--ink) !important;
+    border-color:var(--border) !important;
+  }
+  .leaflet-control-attribution{ display:none; }
+
+  @media (max-width: 640px){
+    #topbar{ flex-wrap:wrap; }
+    #titleCard{ order:1; }
+    #searchWrap{ order:2; flex-basis:100%; max-width:none; }
+    #legend{ max-width:170px; font-size:11.5px; }
+    #compass{ display:none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="map" role="application" aria-label="Illustrated map of the major rivers of Great Britain"></div>
+
+  <div id="topbar">
+    <div id="titleCard" class="panel">
+      <h1>Rivers of Britain</h1>
+      <div id="stats">loading network&hellip;</div>
+    </div>
+    <div id="searchWrap">
+      <div id="searchBox" class="panel">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="searchInput" type="text" placeholder="Find a river, stream or canal&hellip;" autocomplete="off" aria-label="Search waterways">
+        <button id="clearBtn" aria-label="Clear search">&times;</button>
+      </div>
+      <div id="suggestions" class="panel"></div>
+    </div>
+  </div>
+
+  <div id="compass" class="panel" aria-hidden="true">
+    <svg width="28" height="28" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="46" fill="none" stroke="var(--coast)" stroke-width="2"/>
+      <polygon points="50,8 58,50 50,42 42,50" fill="var(--ink)"/>
+      <polygon points="50,92 58,50 50,58 42,50" fill="var(--muted)"/>
+      <text x="50" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">N</text>
+    </svg>
+  </div>
+
+  <div id="legend" class="panel">
+    <h2>Legend</h2>
+    <div class="legend-row"><span class="swatch" style="background:var(--river)"></span>River / stream</div>
+    <div class="legend-row"><span class="swatch" style="background:var(--tidal)"></span>Tidal reach</div>
+    <div class="legend-row"><span class="swatch" style="background:var(--canal)"></span>Canal</div>
+    <label id="toggleRow">
+      <span class="switch"><input type="checkbox" id="showAllToggle"><span class="slider"></span></span>
+      <span>Show every named watercourse</span>
+    </label>
+    <div class="legend-hint">Hover any river for its length and direction of flow. Search always covers every named watercourse, even minor ones hidden by the toggle above.</div>
+  </div>
+
+  <div id="attribution" class="panel">Contains OS data &copy; Crown Copyright and database rights 2026 &middot; OS Open Rivers &middot; Basemap &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener" style="color:inherit">CARTO</a>, &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" style="color:inherit">OpenStreetMap</a> contributors</div>
+</div>
+
+<script src="leaflet.js"></script>
+<script src="topojson-client.min.js"></script>
+<script src="leaflet.polylineDecorator.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  var TYPE_COLOR_VARS = { tidalRiver: '--tidal', canal: '--canal', inlandRiver: '--river' };
+  function cssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+  function primaryForm(frm){
+    if (!frm) return 'inlandRiver';
+    if (frm.indexOf('tidalRiver') !== -1) return 'tidalRiver';
+    if (frm.indexOf('canal') !== -1) return 'canal';
+    return 'inlandRiver';
+  }
+  function typeLabel(frm){
+    var p = primaryForm(frm);
+    if (p === 'tidalRiver') return frm.indexOf(',') !== -1 ? 'River, tidal reach' : 'Tidal reach';
+    if (p === 'canal') return frm.indexOf(',') !== -1 ? 'River, canal' : 'Canal';
+    return 'River / stream';
+  }
+  function colorFor(frm){ return cssVar(TYPE_COLOR_VARS[primaryForm(frm)]); }
+
+  function fmtLen(km){
+    if (km < 1) return Math.round(km*1000) + ' m';
+    return km.toLocaleString('en-GB',{maximumFractionDigits:1}) + ' km';
+  }
+  function fmtBNG(e,n){
+    if (e == null || n == null) return '&ndash;';
+    return Math.round(e).toLocaleString('en-GB') + ' E, ' + Math.round(n).toLocaleString('en-GB') + ' N';
+  }
+  function endLabel(cat, kind){
+    if (kind === 'source') return cat === 'source' ? 'Source' : 'Upstream end';
+    return cat === 'outlet' ? 'Mouth' : 'Downstream end';
+  }
+  function endSub(cat, kind){
+    if (kind === 'source') return cat === 'source' ? 'headwater' : 'continues from another watercourse';
+    return cat === 'outlet' ? 'discharges to tidal water' : 'flows into another watercourse';
+  }
+
+  // ---- compass bearing, source -> mouth, for the "direction of travel" line ----
+  var COMPASS_WORDS = ['north','north-east','east','south-east','south','south-west','west','north-west'];
+  function bearing(lat1, lon1, lat2, lon2){
+    var toRad = Math.PI/180;
+    var y = Math.sin((lon2-lon1)*toRad) * Math.cos(lat2*toRad);
+    var x = Math.cos(lat1*toRad)*Math.sin(lat2*toRad) - Math.sin(lat1*toRad)*Math.cos(lat2*toRad)*Math.cos((lon2-lon1)*toRad);
+    var brng = Math.atan2(y,x) * 180/Math.PI;
+    return (brng + 360) % 360;
+  }
+  function flowDirection(p){
+    if (p.slat == null || p.mlat == null) return null;
+    var brng = bearing(p.slat, p.slon, p.mlat, p.mlon);
+    return COMPASS_WORDS[Math.round(brng/45) % 8];
+  }
+  function flowArrowSvg(){
+    return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="8 5 19 5 19 16"/></svg>';
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function tipHtml(p){
+    var color = colorFor(p.frm);
+    var dir = flowDirection(p);
+    return (
+      '<div class="tip-name">' + escapeHtml(p.nm) + '</div>' +
+      '<div class="tip-badge"><span class="dot" style="background:' + color + '"></span>' + typeLabel(p.frm) + '</div>' +
+      '<div class="tip-row"><span class="k">Length</span><span class="v mono">' + fmtLen(p.len) + '</span></div>' +
+      (dir ? '<div class="tip-flow" style="color:' + color + '">' + flowArrowSvg() + '<span style="color:var(--ink)">Flows towards the ' + dir + '</span></div>' : '') +
+      '<div class="tip-row"><span class="k">' + endLabel(p.sc,'source') + '</span><span class="v mono">' + fmtBNG(p.se,p.sn) + '<span class="tip-sub">' + endSub(p.sc,'source') + '</span></span></div>' +
+      '<div class="tip-row"><span class="k">' + endLabel(p.mc,'mouth') + '</span><span class="v mono">' + fmtBNG(p.me,p.mn) + '<span class="tip-sub">' + endSub(p.mc,'mouth') + '</span></span></div>'
+    );
+  }
+
+  // ---- map setup ----
+  var map = L.map('map', {
+    preferCanvas: true,
+    zoomControl: false,
+    attributionControl: false,
+    minZoom: 5,
+    maxZoom: 15,
+    maxBoundsViscosity: 0.6
+  });
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+  // Real basemap tiles (roads, towns, place names) for geographic orientation.
+  // CARTO's Positron/Dark Matter styles are light enough not to fight with the
+  // river overlay on top. Picks light/dark automatically from the OS/browser
+  // colour scheme, since this page is delivered standalone rather than through
+  // the claude.ai artifact sandbox (which blocks this kind of external tile
+  // request at runtime).
+  var isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var tileLayer = L.tileLayer(
+    isDark
+      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+      : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    { subdomains: 'abcd', maxZoom: 19, attribution: '' }
+  ).addTo(map);
+
+  var MAJOR_KM = 40; // the simple default view shows only rivers at or above this length
+
+  var canvasRenderer = L.canvas({ padding: 0.4 });
+  var majorGroup = L.layerGroup().addTo(map);
+  var minorGroup = L.layerGroup(); // built at load, only added to the map when the toggle is on
+  var labelGroup = L.layerGroup().addTo(map); // permanent river-name labels, major rivers only
+  var arrowGroup = L.layerGroup().addTo(map); // flow-direction arrowheads, major rivers only
+  var selectionLayer = L.layerGroup().addTo(map);
+
+  var allFeatures = []; // {name, len, layer, major}
+  var hovered = null;
+  var zoomGatedItems = []; // { minZoom, layer, group } -- populated once river data loads
+  function updateZoomGating(){
+    if (!map.getZoom && map.getZoom() == null) return;
+    var z;
+    try { z = map.getZoom(); } catch(e) { return; }
+    if (z == null) return;
+    zoomGatedItems.forEach(function(item){
+      var shouldShow = z >= item.minZoom;
+      var isShown = item.group.hasLayer(item.layer);
+      if (shouldShow && !isShown) item.group.addLayer(item.layer);
+      else if (!shouldShow && isShown) item.group.removeLayer(item.layer);
+    });
+  }
+  map.on('zoomend', updateZoomGating);
+
+  function baseStyle(feature){
+    var p = feature.properties;
+    var major = p.len >= MAJOR_KM;
+    return { color: colorFor(p.frm), weight: major ? 2.2 : 1.4, opacity: major ? 0.9 : 0.75, renderer: canvasRenderer };
+  }
+  function hoverStyle(feature){
+    return { color: colorFor(feature.properties.frm), weight: 4.2, opacity: 1, renderer: canvasRenderer };
+  }
+
+  function clearHover(){
+    selectionLayer.clearLayers();
+    if (hovered && hovered.layer) hovered.layer.setStyle(baseStyle(hovered.layer.feature));
+    hovered = null;
+  }
+
+  function showRiver(entry, opts){
+    opts = opts || {};
+    var isVisible = entry.major || minorVisible;
+    clearHover();
+
+    var targetLayer;
+    if (isVisible) {
+      targetLayer = entry.layer;
+      targetLayer.setStyle(hoverStyle(targetLayer.feature));
+      targetLayer.bringToFront();
+    } else {
+      targetLayer = L.geoJSON(entry.layer.feature, { style: hoverStyle, renderer: canvasRenderer }).addTo(selectionLayer);
+    }
+    hovered = { entry: entry, layer: targetLayer, adhoc: !isVisible };
+
+    var p = entry.layer.feature.properties;
+    var accent = colorFor(p.frm);
+    if (p.slon != null && p.slat != null){
+      L.circleMarker([p.slat, p.slon], { radius:5, color:'#fff', weight:2, fillColor:accent, fillOpacity:1, renderer: canvasRenderer })
+        .addTo(selectionLayer);
+    }
+    if (p.mlon != null && p.mlat != null){
+      L.circleMarker([p.mlat, p.mlon], { radius:5, color:'#fff', weight:2, fillColor:accent, fillOpacity:1, renderer: canvasRenderer })
+        .addTo(selectionLayer);
+    }
+
+    targetLayer.bindTooltip(tipHtml(p), { className:'river-tip', sticky:true, direction:'top', offset:[0,-8], opacity:1 });
+    targetLayer.openTooltip();
+
+    if (opts.fly) {
+      var b = targetLayer.getBounds();
+      map.flyToBounds(b, { padding:[80,80], maxZoom: 13, duration: 0.6 });
+    }
+  }
+
+  // ---- major / all toggle ----
+  var minorVisible = false;
+  var toggleInput = document.getElementById('showAllToggle');
+  function updateStatsLabel(){
+    var el = document.getElementById('stats');
+    if (!el.dataset.total) return;
+    el.innerHTML = minorVisible
+      ? '<span class="mono">' + (+el.dataset.total).toLocaleString('en-GB') + '</span> named waterways &middot; <span class="mono">' + el.dataset.totalkm + ' km</span> mapped'
+      : '<span class="mono">' + (+el.dataset.major).toLocaleString('en-GB') + '</span> major rivers shown &middot; <span class="mono">' + el.dataset.majorkm + ' km</span> &middot; ' + (+el.dataset.total).toLocaleString('en-GB') + ' in total';
+  }
+  toggleInput.addEventListener('change', function(){
+    minorVisible = toggleInput.checked;
+    if (minorVisible) { minorGroup.addTo(map); } else { map.removeLayer(minorGroup); }
+    updateStatsLabel();
+  });
+
+  // ---- GB outline: used only to fit/clamp the view, not drawn -- the real
+  // basemap tiles now show the coastline, towns and roads for orientation ----
+  fetch('gb_outline.geojson').then(function(r){ return r.json(); }).then(function(gj){
+    var b = L.geoJSON(gj).getBounds();
+    map.fitBounds(b, { padding: [20,20] });
+    map.setMaxBounds(b.pad(0.6));
+    updateZoomGating();
+  }).catch(function(err){ console.error('outline load failed', err); });
+
+  // ---- label placement helper: midpoint of a feature's longest line part ----
+  function longestPart(geom){
+    if (geom.type === 'LineString') return geom.coordinates;
+    var best = null, bestLen = -1;
+    geom.coordinates.forEach(function(line){
+      if (line.length > bestLen){ bestLen = line.length; best = line; }
+    });
+    return best;
+  }
+  function labelLatLng(feature){
+    var coords = longestPart(feature.geometry);
+    var mid = coords[Math.floor(coords.length/2)];
+    return L.latLng(mid[1], mid[0]);
+  }
+
+  // ---- load rivers ----
+  fetch('rivers.json').then(function(r){ return r.json(); }).then(function(topo){
+    var gj = topojson.feature(topo, topo.objects.data);
+
+    var totalKm = 0, majorKm = 0, majorCount = 0;
+    gj.features.forEach(function(f){
+      totalKm += f.properties.len || 0;
+      if (f.properties.len >= MAJOR_KM){ majorKm += f.properties.len; majorCount++; }
+    });
+    var statsEl = document.getElementById('stats');
+    statsEl.dataset.total = gj.features.length;
+    statsEl.dataset.totalkm = Math.round(totalKm).toLocaleString('en-GB');
+    statsEl.dataset.major = majorCount;
+    statsEl.dataset.majorkm = Math.round(majorKm).toLocaleString('en-GB');
+    updateStatsLabel();
+
+    function makeLayerFor(feature, lyr){
+      lyr.feature = feature;
+      var entry = { name: feature.properties.nm, len: feature.properties.len, layer: lyr, major: feature.properties.len >= MAJOR_KM };
+      lyr.on('mouseover', function(){ showRiver(entry, { fly:false }); });
+      lyr.on('mouseout', function(){ clearHover(); });
+      lyr.on('click', function(){ showRiver(entry, { fly:false }); }); // touch-friendly fallback
+      allFeatures.push(entry);
+    }
+
+    var majorFeatures = gj.features.filter(function(f){ return f.properties.len >= MAJOR_KM; });
+    var minorFeatures = gj.features.filter(function(f){ return f.properties.len < MAJOR_KM; });
+
+    L.geoJSON({ type:'FeatureCollection', features: majorFeatures }, { style: baseStyle, renderer: canvasRenderer, onEachFeature: makeLayerFor }).addTo(majorGroup);
+    L.geoJSON({ type:'FeatureCollection', features: minorFeatures }, { style: baseStyle, renderer: canvasRenderer, onEachFeature: makeLayerFor }).addTo(minorGroup);
+
+    // Permanent italic labels + flow arrows, major rivers only -- and even among
+    // those, only the longest few show at a national zoom. More fade in as you
+    // zoom in, so the default view never turns into label soup.
+    var byLenDesc = majorFeatures.slice().sort(function(a,b){ return b.properties.len - a.properties.len; });
+    var rankOf = new Map();
+    byLenDesc.forEach(function(f,i){ rankOf.set(f, i); });
+    function tierMinZoom(rank){
+      if (rank < 12) return 5;
+      if (rank < 35) return 7;
+      if (rank < 75) return 8;
+      return 9;
+    }
+
+    majorFeatures.forEach(function(f){
+      var minZoom = tierMinZoom(rankOf.get(f));
+
+      var ll = labelLatLng(f);
+      var labelMarker = L.marker(ll, { interactive:false, opacity:0, icon: L.divIcon({ className:'', html:'', iconSize:[0,0] }) })
+        .bindTooltip(f.properties.nm.replace(/\s*\([^)]*\)\s*$/, ''), { permanent:true, direction:'right', offset:[4,0], className:'river-label' });
+      zoomGatedItems.push({ minZoom: minZoom, layer: labelMarker, group: labelGroup });
+
+      var latlngs = f.geometry.type === 'LineString' ? [f.geometry.coordinates.map(function(c){return [c[1],c[0]];})]
+        : f.geometry.coordinates.map(function(line){ return line.map(function(c){return [c[1],c[0]];}); });
+      var poly = L.polyline(latlngs, { opacity:0, weight:0 });
+      try {
+        var decorator = L.polylineDecorator(poly, {
+          patterns: [{ offset: '8%', repeat: '140px', symbol: L.Symbol.arrowHead({
+            pixelSize: 7, headAngle: 40, pathOptions: { color: colorFor(f.properties.frm), weight: 1.3, opacity: 0.85, fillOpacity: 0.85, stroke: true }
+          }) }]
+        });
+        zoomGatedItems.push({ minZoom: minZoom, layer: decorator, group: arrowGroup });
+      } catch (e) { /* decorator is a visual nicety; ignore failures */ }
+    });
+
+    updateZoomGating();
+
+    setupSearch();
+  }).catch(function(err){
+    console.error('rivers load failed', err);
+    document.getElementById('stats').textContent = 'failed to load river data';
+  });
+
+  // ---- search ----
+  function setupSearch(){
+    var input = document.getElementById('searchInput');
+    var box = document.getElementById('suggestions');
+    var clearBtn = document.getElementById('clearBtn');
+    var activeIdx = -1;
+    var currentMatches = [];
+
+    function render(matches){
+      currentMatches = matches;
+      activeIdx = -1;
+      if (!matches.length){
+        box.innerHTML = '<div id="noResults">No waterway matches that name.</div>';
+        box.classList.add('open');
+        return;
+      }
+      box.innerHTML = matches.map(function(m, i){
+        var color = colorFor(m.layer.feature.properties.frm);
+        return '<div class="suggestion" data-i="' + i + '">' +
+          '<span><span class="stype" style="background:' + color + '"></span>' + escapeHtml(m.name) + '</span>' +
+          '<span class="slen mono">' + fmtLen(m.len) + '</span></div>';
+      }).join('');
+      box.classList.add('open');
+    }
+
+    function pick(m){
+      input.value = m.name;
+      box.classList.remove('open');
+      showRiver(m, { fly:true });
+    }
+
+    input.addEventListener('input', function(){
+      var q = input.value.trim().toLowerCase();
+      clearBtn.style.display = q ? 'block' : 'none';
+      if (!q){ box.classList.remove('open'); return; }
+      var starts = [], contains = [];
+      for (var i=0;i<allFeatures.length;i++){
+        var nm = allFeatures[i].name.toLowerCase();
+        var idx = nm.indexOf(q);
+        if (idx === 0) starts.push(allFeatures[i]);
+        else if (idx > 0) contains.push(allFeatures[i]);
+        if (starts.length >= 8) break;
+      }
+      var matches = starts.concat(contains).slice(0,8);
+      render(matches);
+    });
+
+    box.addEventListener('click', function(e){
+      var row = e.target.closest('.suggestion');
+      if (!row) return;
+      pick(currentMatches[+row.dataset.i]);
+    });
+
+    input.addEventListener('keydown', function(e){
+      if (!box.classList.contains('open')) return;
+      var rows = box.querySelectorAll('.suggestion');
+      if (e.key === 'ArrowDown'){ e.preventDefault(); activeIdx = Math.min(activeIdx+1, rows.length-1); }
+      else if (e.key === 'ArrowUp'){ e.preventDefault(); activeIdx = Math.max(activeIdx-1, 0); }
+      else if (e.key === 'Enter'){ if (activeIdx>=0 && currentMatches[activeIdx]) pick(currentMatches[activeIdx]); return; }
+      else if (e.key === 'Escape'){ box.classList.remove('open'); return; }
+      else return;
+      rows.forEach(function(r,i){ r.classList.toggle('active', i===activeIdx); });
+    });
+
+    clearBtn.addEventListener('click', function(){
+      input.value = '';
+      clearBtn.style.display = 'none';
+      box.classList.remove('open');
+      input.focus();
+    });
+
+    document.addEventListener('click', function(e){
+      if (!document.getElementById('searchWrap').contains(e.target)) box.classList.remove('open');
+    });
+  }
+})();
+</script>
+</body>
+</html>
