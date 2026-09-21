@@ -505,24 +505,28 @@
     preferCanvas: true,
     zoomControl: false,
     attributionControl: false,
-    minZoom: 5,
     maxZoom: 15,
-    maxBoundsViscosity: 0.6
+    maxBoundsViscosity: 1.0
   });
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
   // Real basemap tiles (roads, towns, place names) for geographic orientation.
-  // CARTO's Positron/Dark Matter styles are light enough not to fight with the
-  // river overlay on top. Picks light/dark automatically from the OS/browser
-  // colour scheme, since this page is delivered standalone rather than through
-  // the claude.ai artifact sandbox (which blocks this kind of external tile
-  // request at runtime).
+  // Esri's Light/Dark Gray Canvas basemaps are free to use directly from
+  // server.arcgisonline.com with no API key or account required (unlike
+  // CARTO's basemaps.cartocdn.com tiles, which now require a key). Picks
+  // light/dark automatically from the OS/browser colour scheme, since this
+  // page is delivered standalone rather than through the claude.ai artifact
+  // sandbox (which blocks this kind of external tile request at runtime).
   var isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-  var tileLayer = L.tileLayer(
-    isDark
-      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-      : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    { subdomains: 'abcd', maxZoom: 19, attribution: '' }
+  var esriAttrib = 'Esri, HERE, Garmin, &copy; OpenStreetMap contributors, and the GIS community';
+  var canvasStyle = isDark ? 'Dark_Gray' : 'Light_Gray';
+  L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_' + canvasStyle + '_Base/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 16, attribution: '' }
+  ).addTo(map);
+  L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_' + canvasStyle + '_Reference/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 16, attribution: '', pane: 'shadowPane' }
   ).addTo(map);
 
   var MAJOR_KM = 40; // the simple default view shows only rivers at or above this length
@@ -619,10 +623,37 @@
 
   // ---- GB outline: used only to fit/clamp the view, not drawn -- the real
   // basemap tiles now show the coastline, towns and roads for orientation ----
+  //
+  // The outline's MultiPolygon includes Rockall, a speck of rock ~300km out
+  // in the Atlantic that's still legally part of the UK. Fitting the view to
+  // include it drags the whole map west and leaves a huge stretch of empty
+  // sea in frame, so it (and anything else that remote) is excluded from the
+  // bounds used to fit/lock the view -- St Kilda and the rest of the Outer
+  // Hebrides, the westernmost points anyone actually expects to see, sit
+  // around -8.6 degrees, so -9 is a safe cutoff.
+  var WEST_CUTOFF = -9;
   fetch('gb_outline.geojson').then(function(r){ return r.json(); }).then(function(gj){
-    var b = L.geoJSON(gj).getBounds();
-    map.fitBounds(b, { padding: [20,20] });
-    map.setMaxBounds(b.pad(0.6));
+    var polys = gj.geometry.type === 'MultiPolygon' ? gj.geometry.coordinates : [gj.geometry.coordinates];
+    var minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+    polys.forEach(function(poly){
+      var westmost = Infinity;
+      poly.forEach(function(ring){ ring.forEach(function(c){ if (c[0] < westmost) westmost = c[0]; }); });
+      if (westmost < WEST_CUTOFF) return; // skip this island entirely
+      poly.forEach(function(ring){
+        ring.forEach(function(c){
+          if (c[0] < minLon) minLon = c[0];
+          if (c[0] > maxLon) maxLon = c[0];
+          if (c[1] < minLat) minLat = c[1];
+          if (c[1] > maxLat) maxLat = c[1];
+        });
+      });
+    });
+    var b = L.latLngBounds([minLat, minLon], [maxLat, maxLon]);
+    map.fitBounds(b, { padding: [4,4] });
+    // Lock zooming out no further than this initial GB-filling view, and stop
+    // panning away from GB entirely.
+    map.setMinZoom(map.getZoom());
+    map.setMaxBounds(b.pad(0.15));
     updateZoomGating();
   }).catch(function(err){ console.error('outline load failed', err); });
 
@@ -657,20 +688,42 @@
     statsEl.dataset.majorkm = Math.round(majorKm).toLocaleString('en-GB');
     updateStatsLabel();
 
-    function makeLayerFor(feature, lyr){
+    // Leaflet's canvas hit-testing is unreliable on lines this thin (1.4-2.2px):
+    // real mouse hover frequently misses even when landing exactly on the
+    // drawn stroke. The fix is the usual one for thin Leaflet lines: draw the
+    // visible line non-interactively, and lay an invisible, much wider
+    // "hit target" line on top of it to actually catch the mouseover/click.
+    var visibleLayerByFeature = new Map();
+    function makeVisible(feature, lyr){
       lyr.feature = feature;
-      var entry = { name: feature.properties.nm, len: feature.properties.len, layer: lyr, major: feature.properties.len >= MAJOR_KM };
+      visibleLayerByFeature.set(feature, lyr);
+    }
+    function makeHit(feature, lyr){
+      lyr.feature = feature;
+      var visibleLyr = visibleLayerByFeature.get(feature);
+      var entry = { name: feature.properties.nm, len: feature.properties.len, layer: visibleLyr, major: feature.properties.len >= MAJOR_KM };
       lyr.on('mouseover', function(){ showRiver(entry, { fly:false }); });
       lyr.on('mouseout', function(){ clearHover(); });
       lyr.on('click', function(){ showRiver(entry, { fly:false }); }); // touch-friendly fallback
       allFeatures.push(entry);
     }
+    function invisibleStyle(feature){
+      var major = feature.properties.len >= MAJOR_KM;
+      return { color:'#000', weight: major ? 14 : 10, opacity: 0, renderer: canvasRenderer };
+    }
+    function nonInteractiveBaseStyle(feature){
+      var s = baseStyle(feature);
+      s.interactive = false;
+      return s;
+    }
 
     var majorFeatures = gj.features.filter(function(f){ return f.properties.len >= MAJOR_KM; });
     var minorFeatures = gj.features.filter(function(f){ return f.properties.len < MAJOR_KM; });
 
-    L.geoJSON({ type:'FeatureCollection', features: majorFeatures }, { style: baseStyle, renderer: canvasRenderer, onEachFeature: makeLayerFor }).addTo(majorGroup);
-    L.geoJSON({ type:'FeatureCollection', features: minorFeatures }, { style: baseStyle, renderer: canvasRenderer, onEachFeature: makeLayerFor }).addTo(minorGroup);
+    L.geoJSON({ type:'FeatureCollection', features: majorFeatures }, { style: nonInteractiveBaseStyle, renderer: canvasRenderer, interactive: false, onEachFeature: makeVisible }).addTo(majorGroup);
+    L.geoJSON({ type:'FeatureCollection', features: majorFeatures }, { style: invisibleStyle, renderer: canvasRenderer, onEachFeature: makeHit }).addTo(majorGroup);
+    L.geoJSON({ type:'FeatureCollection', features: minorFeatures }, { style: nonInteractiveBaseStyle, renderer: canvasRenderer, interactive: false, onEachFeature: makeVisible }).addTo(minorGroup);
+    L.geoJSON({ type:'FeatureCollection', features: minorFeatures }, { style: invisibleStyle, renderer: canvasRenderer, onEachFeature: makeHit }).addTo(minorGroup);
 
     // Permanent italic labels + flow arrows, major rivers only -- and even among
     // those, only the longest few show at a national zoom. More fade in as you
@@ -695,11 +748,16 @@
 
       var latlngs = f.geometry.type === 'LineString' ? [f.geometry.coordinates.map(function(c){return [c[1],c[0]];})]
         : f.geometry.coordinates.map(function(line){ return line.map(function(c){return [c[1],c[0]];}); });
-      var poly = L.polyline(latlngs, { opacity:0, weight:0 });
+      // interactive:false + shared renderer matters: leaving this on the map's
+      // own implicit default canvas renderer (since the map uses
+      // preferCanvas:true) creates a SECOND transparent canvas layered above
+      // the one our rivers are drawn on, which silently swallows every mouse
+      // event before it can reach the real hit-test layer underneath.
+      var poly = L.polyline(latlngs, { opacity:0, weight:0, interactive:false, renderer: canvasRenderer });
       try {
         var decorator = L.polylineDecorator(poly, {
           patterns: [{ offset: '8%', repeat: '140px', symbol: L.Symbol.arrowHead({
-            pixelSize: 7, headAngle: 40, pathOptions: { color: colorFor(f.properties.frm), weight: 1.3, opacity: 0.85, fillOpacity: 0.85, stroke: true }
+            pixelSize: 7, headAngle: 40, pathOptions: { color: colorFor(f.properties.frm), weight: 1.3, opacity: 0.85, fillOpacity: 0.85, stroke: true, interactive: false, renderer: canvasRenderer }
           }) }]
         });
         zoomGatedItems.push({ minZoom: minZoom, layer: decorator, group: arrowGroup });
